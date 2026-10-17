@@ -1,0 +1,47 @@
+Acid Machine by Phragma - installation
+======================================
+
+macOS (Apple Silicon et Intel, macOS 10.13 ou plus recent)
+----------------------------------------------------------
+1. Copie "Acid Machine.vst3" dans :
+       ~/Library/Audio/Plug-Ins/VST3/
+   (Finder > menu Aller > Aller au dossier... > colle ce chemin)
+   Ne garde qu'UNE copie du plugin.
+
+2. Le plugin n'est pas notarise par Apple : macOS le bloque tant que tu n'as pas
+   retire le marqueur de telechargement. Ouvre l'app Terminal et lance :
+
+       xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/"Acid Machine.vst3"
+
+3. Relance ton DAW et rescanne les plugins (Ableton : Option + Rescanner).
+
+
+Windows (64 bits)
+-----------------
+1. Copie le DOSSIER "Acid Machine.vst3" en entier dans :
+       C:\Program Files\Common Files\VST3\
+
+2. Relance ton DAW et rescanne les plugins.
+
+
+Utilisation
+-----------
+Acid Machine est un instrument (piste MIDI).
+
+SEQ allume (defaut) : le motif de 16 pas joue quand le transport du DAW tourne,
+cale sur la mesure. Une note MIDI tenue transpose le motif (C3 = pas de
+transposition). TRANSPOSE fait la meme chose en permanence.
+
+SEQ eteint : on joue Acid Machine depuis un clip MIDI.
+  - velocite 110 ou plus = ACCENT
+  - deux notes qui se chevauchent = SLIDE (pas de nouvelle attaque)
+
+Grille des pas :
+  NOTE    tirer vers le haut / le bas, molette, clic droit (liste), double clic = C
+  UP/DOWN octave du pas
+  TIME    NOTE / TIE (prolonge la note d'avant) / REST
+  ACCENT, SLIDE (glisse vers le pas suivant) ; on peut peindre en glissant
+  Clic sur un numero de pas : le motif s'arrete a ce pas (LENGTH).
+
+Presets : fleches, menu du nom, SAVE. Taille de la fenetre : bouton "100 %" ou
+coin en bas a droite.
