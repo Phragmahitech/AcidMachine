@@ -4,6 +4,7 @@
 #include "../Source/PluginProcessor.h"
 #include "../Source/PluginEditor.h"
 #include "../Source/FactoryPresets.h"
+#include "../Source/PatternGenerator.h"
 
 #include <iostream>
 #include <random>
@@ -112,7 +113,7 @@ static void testParameters()
     std::unique_ptr<juce::AudioProcessor> base (createPluginFilter());
     auto& p = dynamic_cast<Proc&> (*base);
 
-    check (p.getParameters().size() == 14 + 5 * Proc::numSteps, "nombre de parametres : " + juce::String (p.getParameters().size()));
+    check (p.getParameters().size() == 16 + 5 * Proc::numSteps, "nombre de parametres : " + juce::String (p.getParameters().size()));
 
     juce::StringArray ids;
     for (auto* param : p.getParameters())
@@ -122,7 +123,7 @@ static void testParameters()
 
     for (const char* id : { Proc::tuningId, Proc::cutoffId, Proc::resonanceId, Proc::envModId, Proc::decayId, Proc::accentId,
                             Proc::waveformId, Proc::volumeId, Proc::slideTimeId, Proc::seqId, Proc::lengthId, Proc::rateId,
-                            Proc::swingId, Proc::transposeId })
+                            Proc::swingId, Proc::transposeId, Proc::driveId, Proc::randomStyleId })
         check (ids.contains (id), juce::String ("parametre manquant : ") + id);
 
     check (ids.contains ("s1Pitch") && ids.contains ("s16Slide"), "parametres des pas");
@@ -363,6 +364,92 @@ static void testRobustness()
     }
 }
 
+static void testRandom (const juce::File& outputDir)
+{
+    std::cout << "- bouton RANDOM et choix du style" << std::endl;
+    std::unique_ptr<juce::AudioProcessor> base (createPluginFilter());
+    auto& p = dynamic_cast<Proc&> (*base);
+
+    check (p.apvts.getParameter (Proc::randomStyleId)->getCurrentValueAsText() == "ACID", "style par defaut : ACID");
+    check (! p.presets.isStored (*p.apvts.getParameter (Proc::randomStyleId)), "le style RANDOM ne doit pas aller dans les presets");
+
+    for (int style = 0; style < acid::PatternGenerator::numStyles; ++style)
+    {
+        setParam (p, Proc::randomStyleId, (float) style);
+        setParam (p, Proc::lengthId, 5.0f);
+        p.randomizePattern ((uint32_t) (100 + style));
+        const auto expected = acid::PatternGenerator::generate (style, (uint32_t) (100 + style));
+        const auto actual = p.readPattern();
+        bool same = actual.length == 16;
+        for (size_t i = 0; same && i < 16; ++i)
+        {
+            const auto& a = expected.steps[i];
+            const auto& b = actual.steps[i];
+            same = a.pitch == b.pitch && a.octave == b.octave && a.time == b.time && a.accent == b.accent && a.slide == b.slide;
+        }
+        check (same, juce::String ("motif RANDOM mal ecrit : ") + acid::PatternGenerator::styleName (style));
+    }
+
+    // Deux clics = deux motifs différents ; le preset en cours passe en « modifié »
+    p.presets.loadFactory (2);
+    p.randomizePattern();
+    const auto first = p.readPattern();
+    p.randomizePattern();
+    const auto second = p.readPattern();
+    bool different = false;
+    for (size_t i = 0; i < 16; ++i)
+        different = different || first.steps[i].pitch != second.steps[i].pitch || first.steps[i].time != second.steps[i].time
+                              || first.steps[i].accent != second.steps[i].accent || first.steps[i].octave != second.steps[i].octave;
+    check (different, "deux RANDOM de suite ont donne le meme motif");
+    check (p.presets.isModified(), "RANDOM : le preset doit etre marque modifie");
+
+    // Changer seulement le style ne marque pas le preset comme modifié
+    p.presets.loadFactory (2);
+    setParam (p, Proc::randomStyleId, 2.0f);
+    check (! p.presets.isModified(), "changer le style RANDOM ne doit pas modifier le preset");
+
+    // Interface : le bouton et le menu
+    std::unique_ptr<juce::AudioProcessorEditor> ed (p.createEditorAndMakeActive());
+    if (auto* editor = dynamic_cast<AcidMachineAudioProcessorEditor*> (ed.get()))
+    {
+        auto& facade = editor->getFacade();
+        check (facade.getStyleButton().getButtonText() == "PHRYGIAN", "texte du style : " + facade.getStyleButton().getButtonText());
+        setParam (p, Proc::randomStyleId, 6.0f);
+        check (facade.getStyleButton().getButtonText() == "HI-TECH", "le style affiche doit suivre le parametre");
+
+        const auto before = p.readPattern();
+        facade.getRandomButton().triggerClick();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
+        const auto after = p.readPattern();
+        bool changed = false;
+        for (size_t i = 0; i < 16; ++i)
+            changed = changed || before.steps[i].pitch != after.steps[i].pitch || before.steps[i].time != after.steps[i].time
+                              || before.steps[i].accent != after.steps[i].accent || before.steps[i].octave != after.steps[i].octave;
+        check (changed, "clic sur RANDOM : le motif n'a pas change");
+
+        for (auto* c : { (juce::Component*) &facade.getStyleButton(), (juce::Component*) &facade.getRandomButton() })
+            check (facade.getLocalBounds().contains (c->getBounds()), "bouton hors de la facade");
+        check (! facade.getStyleButton().getBounds().intersects (facade.getRandomButton().getBounds()), "style et RANDOM se chevauchent");
+
+        if (outputDir != juce::File())
+        {
+            juce::PNGImageFormat png;
+            juce::FileOutputStream out (outputDir.getChildFile ("ui_random.png"));
+            if (out.openedOk())
+            {
+                out.setPosition (0);
+                out.truncate();
+                png.writeImageToStream (ed->createComponentSnapshot (ed->getLocalBounds(), true, 2.0f), out);
+            }
+        }
+        p.editorBeingDeleted (ed.get());
+    }
+    else
+    {
+        check (false, "pas d'editeur");
+    }
+}
+
 static void testState()
 {
     std::cout << "- etat du projet" << std::endl;
@@ -510,8 +597,9 @@ int main (int argc, char* argv[])
     testSequencerMode();
     testRobustness();
     testState();
+    testRandom (outputDir);
     testEditor (outputDir);
-    testPresetsAndWindowSize<Proc, AcidMachineAudioProcessorEditor, AcidMachineFacade> ({}, outputDir, "INIT");
+    testPresetsAndWindowSize<Proc, AcidMachineAudioProcessorEditor, AcidMachineFacade> ({ Proc::randomStyleId }, outputDir, "INIT");
 
     if (failures == 0)
         std::cout << "OK" << std::endl;

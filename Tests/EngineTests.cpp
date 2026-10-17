@@ -3,6 +3,7 @@
 #include "AcidVoice.h"
 #include "AcidSequencer.h"
 #include "FactoryPresets.h"
+#include "PatternGenerator.h"
 
 #include <cfenv>
 #include <complex>
@@ -52,16 +53,18 @@ static double toneLevel (const std::vector<double>& x, size_t from, size_t count
 }
 
 /** Fréquence fondamentale par comptage des passages à zéro montants (signal filtré). */
-static double estimatePitch (const std::vector<double>& x, size_t from, size_t count, double rate)
+static double estimatePitch (const std::vector<double>& x, size_t from, size_t count, double rate, double around = 0.0)
 {
-    // Lissage pour ne garder que la fondamentale
+    // Lissage pour ne garder que la fondamentale (vers la fréquence attendue si on la donne)
+    const double k = around > 0.0 ? 1.0 - std::exp (-2.0 * pi * around / rate) : 0.02;
     std::vector<double> y (count);
-    double a = 0.0, b = 0.0;
+    double a = 0.0, b = 0.0, c = 0.0;
     for (size_t i = 0; i < count; ++i)
     {
-        a += 0.02 * (x[from + i] - a);
-        b += 0.02 * (a - b);
-        y[i] = b;
+        a += k * (x[from + i] - a);
+        b += k * (a - b);
+        c += k * (b - c);
+        y[i] = around > 0.0 ? c : b;
     }
     double mean = 0.0;
     for (auto v : y) mean += v;
@@ -168,7 +171,7 @@ static void testIdleAndPitch()
             v.kill();
             const auto out = renderNote (v, note, false, 600.0, 600.0, rate);
             const double expected = 440.0 * std::pow (2.0, (note - 69) / 12.0);
-            const double measured = estimatePitch (out, (size_t) (0.1 * rate), (size_t) (0.45 * rate), rate);
+            const double measured = estimatePitch (out, (size_t) (0.1 * rate), (size_t) (0.45 * rate), rate, expected);
             check (std::abs (measured / expected - 1.0) < 0.004, "hauteur note " + std::to_string (note) + " a " + num (rate) + " : "
                    + num (measured) + " au lieu de " + num (expected));
         }
@@ -602,6 +605,152 @@ static void testFactoryPresets()
     }
 }
 
+static void testDrive()
+{
+    std::cout << "- DRIVE : 0 = aucun effet, sinon harmoniques en plus, niveau tenu" << std::endl;
+    const double rate = 48000.0;
+
+    auto render = [&] (double drive, bool accent, double cutoff = 0.4)
+    {
+        AcidVoice v;
+        v.prepare (rate);
+        auto s = cutoff < 0.2 ? makeSettings (cutoff, 0.0, 0.0, 0.5, 1.0) : makeSettings (cutoff, 0.6, 0.5, 0.5, 1.0);
+        s.drive = drive;
+        v.updateSettings (s);
+        return renderNote (v, 36, accent, 150.0, 300.0, rate);
+    };
+
+    // À 0, rien ne change (même chemin de calcul que sans DRIVE)
+    {
+        AcidVoice a;
+        a.prepare (rate);
+        a.updateSettings (makeSettings (0.4, 0.6, 0.5, 0.5, 1.0));
+        const auto plain = renderNote (a, 36, false, 150.0, 300.0, rate);
+        const auto zero = render (0.0, false);
+        bool same = plain.size() == zero.size();
+        for (size_t i = 0; same && i < plain.size(); ++i) same = plain[i] == zero[i];
+        check (same, "DRIVE a 0 doit laisser le son intact");
+    }
+
+    // Un peu de DRIVE ne saute pas : 0,001 est presque identique à 0
+    {
+        const auto a = render (0.0, true), b = render (0.001, true);
+        double diff = 0.0;
+        for (size_t i = 0; i < a.size(); ++i) diff = std::max (diff, std::abs (a[i] - b[i]));
+        check (diff < 0.02, "DRIVE 0 -> 0,001 : saut de " + num (diff));
+    }
+
+    // Plus de DRIVE = plus d'harmoniques aiguës relativement à la fondamentale, niveau borné
+    double previousRatio = 0.0;
+    for (double d : { 0.0, 0.4, 0.8 })
+    {
+        const auto out = render (d, false, 0.1);
+        const double h1 = toneLevel (out, 2400, 4800, 65.406, rate);
+        double h7 = 0.0;
+        for (int h = 3; h <= 21; h += 2)
+            h7 += toneLevel (out, 2400, 4800, 65.406 * h, rate);
+        const double ratio = h7 / h1;
+        check (ratio > previousRatio, "DRIVE " + num (d) + " : harmoniques " + num (ratio));
+        previousRatio = ratio;
+        check (peakOf (out) <= 1.0, "DRIVE " + num (d) + " : crete " + num (peakOf (out)));
+        const double rmsDb = [&] { double e = 0; for (auto x : out) e += x * x; return 10.0 * std::log10 (e / (double) out.size()); }();
+        static double firstRms = rmsDb;
+        check (std::abs (rmsDb - firstRms) < 9.0, "DRIVE " + num (d) + " : niveau moyen trop different (" + num (rmsDb - firstRms) + " dB)");
+    }
+
+    // Stabilité et silence au repos avec DRIVE à fond
+    {
+        AcidVoice v;
+        v.prepare (44100.0);
+        auto s = makeSettings (1.0, 1.0, 1.0, 1.0, 1.0, true);
+        s.drive = 1.0;
+        v.updateSettings (s);
+        auto out = renderNote (v, 24, true, 200.0, 1500.0, 44100.0);
+        bool finite = true;
+        for (auto x : out) finite = finite && std::isfinite (x) && std::abs (x) <= 1.0;
+        check (finite, "DRIVE a fond : sortie non finie ou au-dela de 1");
+        check (peakOf (out, (size_t) (1.2 * 44100.0)) < 1.0e-4 && v.isIdle(), "DRIVE a fond : la voix doit s'eteindre");
+    }
+}
+
+static void testPatternGenerator()
+{
+    std::cout << "- generateur de motifs (RANDOM)" << std::endl;
+    using G = PatternGenerator;
+
+    for (int style = 0; style < G::numStyles; ++style)
+    {
+        const auto habits = G::habitsFor (style);
+        std::vector<std::string> seen;
+        int totalAccents = 0, totalSlides = 0, totalNotes = 0, roots = 0;
+
+        for (uint32_t seed = 1; seed <= 300; ++seed)
+        {
+            const auto p = G::generate (style, seed);
+            check (p.length == 16, "longueur");
+
+            std::string key;
+            int notes = 0, accents = 0;
+            for (int i = 0; i < 16; ++i)
+            {
+                const auto& s = p.steps[(size_t) i];
+                key += std::to_string (s.time) + ":" + std::to_string (s.pitch) + ":" + std::to_string (s.octave) + (s.accent ? "a" : "") + (s.slide ? "s" : "") + ",";
+
+                if (s.time == Step::note)
+                {
+                    ++notes; accents += s.accent; totalSlides += s.slide; ++totalNotes; roots += s.pitch == 0;
+                    check (std::find (habits.scale.begin(), habits.scale.end(), s.pitch) != habits.scale.end(),
+                           std::string ("note hors gamme (") + G::styleName (style) + ") : " + std::to_string (s.pitch));
+                    check (s.octave >= 0 && s.octave <= 2, "octave");
+                }
+                else
+                {
+                    check (! s.accent, "accent sur un silence ou un TIE");
+                }
+
+                // Un slide mène toujours à une note
+                if (s.slide)
+                    check (s.time != Step::rest && p.steps[(size_t) ((i + 1) % 16)].time == Step::note, "slide qui ne mene pas a une note");
+
+                if (style == G::psyGallop && i % 4 == 0)
+                    check (s.time == Step::rest, "PSY GALLOP : le temps doit rester libre pour le kick");
+            }
+
+            totalAccents += accents;
+            check (notes >= 8, std::string ("motif trop vide (") + G::styleName (style) + ")");
+            check (accents >= 2, "au moins deux accents");
+
+            const auto& first = p.steps[(size_t) (style == G::psyGallop ? 1 : 0)];
+            check (first.time == Step::note && first.pitch == 0 && first.octave == 1, std::string ("le premier pas joue doit etre la tonique (") + G::styleName (style) + ")");
+
+            seen.push_back (key);
+        }
+
+        std::sort (seen.begin(), seen.end());
+        const auto unique = (size_t) (std::unique (seen.begin(), seen.end()) - seen.begin());
+        check (unique > 290, std::string ("pas assez de variete (") + G::styleName (style) + ") : " + std::to_string (unique));
+        check (roots > totalNotes / 5, std::string ("trop peu de toniques (") + G::styleName (style) + ")");
+        (void) totalAccents;
+        if (style == G::hiTech || style == G::psyGallop)
+            check (totalSlides < totalNotes / 8, std::string ("trop de slides pour ") + G::styleName (style));
+    }
+
+    // Même graine, même motif
+    const auto a = G::generate (G::acid, 42), b = G::generate (G::acid, 42), c = G::generate (G::acid, 43);
+    bool same = true, different = false;
+    for (size_t i = 0; i < 16; ++i)
+    {
+        same = same && a.steps[i].pitch == b.steps[i].pitch && a.steps[i].time == b.steps[i].time && a.steps[i].accent == b.steps[i].accent;
+        different = different || a.steps[i].pitch != c.steps[i].pitch || a.steps[i].time != c.steps[i].time || a.steps[i].accent != c.steps[i].accent || a.steps[i].octave != c.steps[i].octave;
+    }
+    check (same && different, "graines : meme graine = meme motif, autre graine = autre motif");
+
+    // Le majeur n'a pas de tierce mineure, le mineur pas de tierce majeure
+    for (uint32_t seed = 1; seed < 100; ++seed)
+        for (const auto& s : G::generate (G::major, seed).steps)
+            check (s.time != Step::note || s.pitch != 3, "tierce mineure en MAJOR");
+}
+
 //==============================================================================
 int main()
 {
@@ -620,6 +769,8 @@ int main()
     testSquare();
     testSequencer();
     testFactoryPresets();
+    testDrive();
+    testPatternGenerator();
 
     if (failures == 0)
         std::cout << "OK" << std::endl;

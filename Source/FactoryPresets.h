@@ -32,6 +32,7 @@ struct FactoryPreset
     float swing;       // %
     int length;
     std::array<const char*, 16> steps;
+    float drive = 0.0f;   // %
 };
 
 /** Lit un pas écrit comme ci-dessus. */
@@ -125,13 +126,13 @@ inline const std::array<FactoryPreset, 18>& factoryPresets()
           {{ "Cv!", "C", "Cv", "C^", "Cv", "C", "Cv~", "C^", "Cv!", "C", "D#", "Cv", "C^!", "Cv", "G", "C" }} },
 
         { "ACID - Screamer",          68, 95, 80, 25, 100, false, 1, 0, 16,
-          {{ "C!", "C^", "C", "D#^!", "C", "C^~", "G", "C", "C!", "F^", "C", "C^", "D#!~", "C^", "A#", "G" }} },
+          {{ "C!", "C^", "C", "D#^!", "C", "C^~", "G", "C", "C!", "F^", "C", "C^", "D#!~", "C^", "A#", "G" }}, 45 },
 
         { "ACID - Slide City",        30, 80, 60, 60, 70, false, 1,  0, 16,
           {{ "C~", "D#~", "F~", "G!", "G~", "F~", "D#", "C!", "C~", "A#v~", "C~", "G!", "D#~", "C~", "F", "C" }} },
 
         { "ACID - Wow Accents",       25, 95, 50, 30, 100, false, 1, 0, 16,
-          {{ "C!", "C!", "C", "C!", "C^!", "C", "C!", "D#", "C!", "C!", "C", "G!", "C!", "C", "A#!", "C" }} },
+          {{ "C!", "C!", "C", "C!", "C^!", "C", "C!", "D#", "C!", "C!", "C", "G!", "C!", "C", "A#!", "C" }}, 30 },
 
         { "ACID - Square Bubbles",    30, 72, 60, 35, 70, true,  1,  0, 16,
           {{ "C!", "G", "C^", "G", "D#!", "C", "G~", "C^", "C!", "G", "A#", "G", "F!~", "D#", "D", "C" }} },
@@ -140,7 +141,7 @@ inline const std::array<FactoryPreset, 18>& factoryPresets()
           {{ "-", "C", "C^", "C!", "-", "C", "C", "D#!", "-", "C", "C^", "C!", "-", "C#", "C", "G!" }} },
 
         { "ACID - Hi-Tech Run",       40, 86, 70, 15, 90, false, 1,  0, 16,
-          {{ "C!", "C^", "C", "C^", "C#!", "C^", "C", "G", "C!", "C^", "D#", "C^", "C!", "F#^", "C", "G^" }} },
+          {{ "C!", "C^", "C", "C^", "C#!", "C^", "C", "G", "C!", "C^", "D#", "C^", "C!", "F#^", "C", "G^" }}, 25 },
     }};
 
     return list;

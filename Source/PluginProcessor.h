@@ -19,6 +19,8 @@ public:
     static constexpr const char* waveformId   = "waveform";
     static constexpr const char* volumeId     = "volume";
     static constexpr const char* slideTimeId  = "slideTime";
+    static constexpr const char* driveId      = "drive";
+    static constexpr const char* randomStyleId = "randomStyle";   // style du bouton RANDOM (pas gardé dans les presets)
 
     static constexpr const char* seqId        = "seq";
     static constexpr const char* lengthId     = "length";
@@ -81,6 +83,12 @@ public:
     /** Le motif tel que les paramètres le décrivent. */
     acid::Pattern readPattern() const;
 
+    /** Écrit un motif dans les paramètres des pas (et met la longueur à celle du motif). */
+    void writePattern (const acid::Pattern&);
+
+    /** Bouton RANDOM : nouveau motif dans le style choisi. seed = 0 : tirage au hasard. */
+    void randomizePattern (uint32_t seed = 0);
+
     //==========================================================================
     // Pour l'interface (lecture seule)
     int getPlayingStep() const noexcept                     { return playingStep.load (std::memory_order_relaxed); }
@@ -120,6 +128,7 @@ private:
     std::atomic<float>* waveformParam = nullptr;
     std::atomic<float>* volumeParam = nullptr;
     std::atomic<float>* slideTimeParam = nullptr;
+    std::atomic<float>* driveParam = nullptr;
     std::atomic<float>* seqParam = nullptr;
     std::atomic<float>* lengthParam = nullptr;
     std::atomic<float>* rateParam = nullptr;
@@ -138,7 +147,7 @@ private:
 
     // Lissage des potards (sinon un balayage automatisé avance par marches)
     struct Smoothed { double value = 0.5; };
-    Smoothed smoothCutoff, smoothResonance, smoothEnvMod, smoothDecay, smoothAccent, smoothTuning;
+    Smoothed smoothCutoff, smoothResonance, smoothEnvMod, smoothDecay, smoothAccent, smoothTuning, smoothDrive;
     double smoothingCoeff = 0.0;
     double volumeGain = 1.0, volumeStep = 0.0;
 

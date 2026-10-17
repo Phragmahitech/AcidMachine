@@ -199,18 +199,24 @@ private:
 class DiodeLadder
 {
 public:
-    void prepare (double rate)
+    void prepare (double rate, double feedbackHighpassHz = 150.0)
     {
         sampleRate = rate;
-        feedbackHighpass.setHighpass (150.0, rate);   // valeur d'Open303
+        feedbackHighpass.setHighpass (feedbackHighpassHz, rate);   // 150 Hz : valeur d'Open303
         reset();
     }
+
+    /** Plage de la saturation à l'entrée de l'échelle (plus petit = sature plus tôt). */
+    void setSaturationRange (double range) noexcept      { saturationRange = range; }
+
+    /** Multiplie le gain de la boucle de résonance (1 = Open303). */
+    void setResonanceScale (double scale) noexcept       { resonanceScale = scale; }
 
     /** resonanceSkewed : 0..1 (la résonance du potard déjà passée par la courbe d'Open303). */
     void setCoefficients (double cutoff, double resonanceSkewed) noexcept
     {
         cutoff = std::max (200.0, std::min (cutoff, std::min (20000.0, 0.15 * sampleRate)));
-        const double r = resonanceSkewed;
+        const double r = resonanceSkewed * resonanceScale;
         const double fx = cutoff / sampleRate * 0.70710678118654752;   // wc / (2 pi) / sqrt(2)
 
         // Ajustement de kunn / mystran / antto (fil KVR « Open303 », page 40 et suivantes)
@@ -245,13 +251,36 @@ public:
         feedbackHighpass.reset();
     }
 
-    static constexpr double saturationRange = 3.0;
-
 private:
+    double saturationRange = 3.0, resonanceScale = 1.0;
     double sampleRate = 176400.0;
     double b0 = 0.0, k = 0.0, g = 1.0;
     double y1 = 0.0, y2 = 0.0, y3 = 0.0, y4 = 0.0;
     OnePole feedbackHighpass;
+};
+
+//==============================================================================
+/**
+    Constantes du modèle. Valeurs par défaut : Open303, puis recalage sur des enregistrements
+    d'une vraie TB-303 (Tools/Fit303.cpp, voir CALIBRATION.md).
+*/
+struct Calibration
+{
+    // Valeurs recalées sur 30 enregistrements d'une vraie TB-303 (voir CALIBRATION.md) ;
+    // entre parenthèses, la valeur d'Open303 quand elle a changé.
+    double inputHighpass = 74.0, feedbackHighpass = 67.0;                    // Hz (44,5 / 150)
+    double outputAllpass = 14.008, outputHighpass = 24.167;                  // Hz
+    double notchFrequency = 7.5164, notchBandwidth = 4.7;                    // Hz, octaves
+    double cutoffLow = 313.8152786059267, cutoffHigh = 2394.411986817546;    // Hz, potard au minimum / maximum
+    double decayShort = 200.0, decayLong = 2000.0;                           // ms (constante de temps)
+    double accentDecay = 200.0;                                              // ms
+    double ampDecay = 3180.0;                                                // ms, VCA tant que le gate est tenu (1230)
+    double ampFromFilterEnv = 0.257;                                         // part de l'enveloppe du filtre dans le VCA (0,45)
+    double envDepthScale = 1.0;                                              // multiplie la profondeur d'ENV MOD
+    double ladderSaturation = 10.0;                                          // (3 dans la v0.1)
+    double resonanceScale = 0.994;                                           // gain de la boucle de résonance (1)
+    double resonanceCurve = 3.25;                                            // courbe du potard RESONANCE (3)
+    double squareDrive = 98.4, squareOffset = 4.54, squareLevel = 0.5;       // (70 / 4,37)
 };
 
 //==============================================================================
@@ -266,6 +295,7 @@ struct VoiceSettings
     double accent = 0.5;
     bool square = false;
     double slideMs = 60.0;     // temps de slide (60 = TB-303 d'après Open303)
+    double drive = 0.0;        // potard DRIVE (saturation après la voix, 0 = aucune)
 };
 
 class AcidVoice
@@ -273,28 +303,34 @@ class AcidVoice
 public:
     static constexpr int oversampling = 4;
 
-    // Correspondances mesurées (Open303)
-    static constexpr double cutoffLow = 313.8152786059267, cutoffHigh = 2394.411986817546;   // Hz, potard au minimum / maximum
-    static constexpr double decayShort = 200.0, decayLong = 2000.0;                          // ms
-    static constexpr double accentDecay = 200.0;                                             // ms
-    static constexpr double ampDecay = 1230.0, normalRelease = 1.0, accentRelease = 50.0;    // ms
+    static constexpr double normalRelease = 1.0, accentRelease = 50.0;    // ms
 
-    static double cutoffForKnob (double knob)   { return cutoffLow * std::pow (cutoffHigh / cutoffLow, clamp01 (knob)); }
-    static double decayForKnob (double knob)    { return decayShort * std::pow (decayLong / decayShort, clamp01 (knob)); }
-    static double skewResonance (double knob)   { return (1.0 - std::exp (-3.0 * clamp01 (knob))) / (1.0 - std::exp (-3.0)); }
+    double cutoffForKnob (double knob) const    { return calib.cutoffLow * std::pow (calib.cutoffHigh / calib.cutoffLow, clamp01 (knob)); }
+    double decayForKnob (double knob) const     { return calib.decayShort * std::pow (calib.decayLong / calib.decayShort, clamp01 (knob)); }
+    double skewResonance (double knob) const
+    {
+        const double a = calib.resonanceCurve;
+        return a < 1.0e-3 ? clamp01 (knob) : (1.0 - std::exp (-a * clamp01 (knob))) / (1.0 - std::exp (-a));
+    }
+
+    /** Change les constantes du modèle (à appeler avant prepare). */
+    void setCalibration (const Calibration& c)  { calib = c; }
+    const Calibration& getCalibration() const noexcept   { return calib; }
 
     void prepare (double rate)
     {
         sampleRate = rate;
         const double high = rate * oversampling;
 
-        inputHighpass.setHighpass (44.486, high);
-        ladder.prepare (high);
+        inputHighpass.setHighpass (calib.inputHighpass, high);
+        ladder.prepare (high, calib.feedbackHighpass);
+        ladder.setSaturationRange (calib.ladderSaturation);
+        ladder.setResonanceScale (calib.resonanceScale);
         decimator.prepare (oversampling, rate);
 
-        outputAllpass.setAllpass (14.008, rate);
-        outputHighpass.setHighpass (24.167, rate);
-        outputNotch.setNotch (7.5164, rate, 4.7);
+        outputAllpass.setAllpass (calib.outputAllpass, rate);
+        outputHighpass.setHighpass (calib.outputHighpass, rate);
+        outputNotch.setNotch (calib.notchFrequency, rate, calib.notchBandwidth);
         ampSmoother.setLowpass (200.0, rate, std::sqrt (0.5));
 
         updateSettings (settings);
@@ -312,7 +348,7 @@ public:
         const double c = clamp01 (s.cutoff);
         const double sLo = 3.773996325111173 * e + 0.736965594166206;
         const double sHi = 4.194548788411135 * e + 0.864344900642434;
-        envScaler = (1.0 - c) * sLo + c * sHi;
+        envScaler = ((1.0 - c) * sLo + c * sHi) * calib.envDepthScale;
         envOffset = 0.048292930943553 * c + 0.294391201442418;
 
         normalDecay = decayForKnob (s.decay);
@@ -324,10 +360,27 @@ public:
         sweepDischarge = std::exp (-1.0 / (0.001 * (15.0 + 225.0 * rs) * sampleRate));
         sweepDepth = 0.35 + 0.65 * rs;
 
+        // DRIVE : gain avant saturation (jusqu'à +36 dB), légère asymétrie, aigus adoucis
+        const double d = clamp01 (s.drive);
+        driveGain = std::pow (10.0, 36.0 * d / 20.0);
+        driveBias = 0.35 * d;
+        driveNorm = driveReference / (std::tanh (driveGain * driveReference + driveBias) - std::tanh (driveBias));
+        driveWet = std::min (1.0, d * 8.0);   // fondu depuis 0 : pas de saut quand on quitte la position 0
+        const double toneHz = 18000.0 - 11000.0 * d;
+        driveTone = 1.0 - std::exp (-2.0 * pi * toneHz / (sampleRate * oversampling));
+
         updateDecays();
     }
 
     const VoiceSettings& getSettings() const noexcept   { return settings; }
+
+    /** La saturation DRIVE seule (niveau de sortie : un signal à driveReference ressort au même niveau). */
+    double driveShape (double v) const noexcept
+    {
+        return (std::tanh (driveGain * v + driveBias) - std::tanh (driveBias)) * driveNorm;
+    }
+
+    static constexpr double driveReference = 0.1;
 
     /** Nouvelle note : attaque de l'enveloppe, sauf si legato (slide : la hauteur glisse, rien n'est redéclenché). */
     void noteOn (int midiNote, bool accented, bool legato) noexcept
@@ -343,6 +396,7 @@ public:
         {
             // Rien ne sonne : on repart de zéro (pas de clic possible)
             phase = 0.0;
+            toneState = 0.0;
             inputHighpass.reset();
             ladder.reset();
             decimator.reset();
@@ -407,7 +461,7 @@ public:
         ampEnv *= gateOn ? ampDecayCoeff : (accent ? accentReleaseCoeff : normalReleaseCoeff);
         double amp = ampEnv;
         if (gateOn)
-            amp += 0.45 * mainEnv + (accent ? settings.accent * 4.0 : 0.0) * mainEnv;
+            amp += calib.ampFromFilterEnv * mainEnv + (accent ? settings.accent * 4.0 : 0.0) * mainEnv;
         amp = ampSmoother.process (amp);
 
         // Oscillateur + filtre, suréchantillonnés
@@ -423,18 +477,27 @@ public:
 
             // Carré « 303 » : la dent de scie passée dans un étage saturé (Open303 : tanh, +36,9 dB, décalage 4,37),
             // à mi-niveau comme dans Open303 (le carré a deux fois plus d'énergie que la dent de scie)
-            const double wave = settings.square ? -0.5 * std::tanh (squareDrive * saw + squareOffset) : saw;
+            const double wave = settings.square ? -calib.squareLevel * std::tanh (calib.squareDrive * saw + calib.squareOffset) : saw;
 
             double x = inputHighpass.process (-wave);
-            x = ladder.process (x);
+            x = ladder.process (x) * amp * outputScale;
+
+            // DRIVE, au rythme suréchantillonné (pas de repliement des harmoniques ajoutées)
+            if (settings.drive > 0.0)
+            {
+                const double shaped = driveShape (x);
+                toneState += driveTone * (shaped - toneState);
+                x += driveWet * (toneState - x);
+            }
+
             decimator.push (x);
         }
 
+        // Filtres de sortie (linéaires) : le passe-haut enlève aussi le continu de la saturation asymétrique
         double y = decimator.output();
         y = outputAllpass.process (y);
         y = outputHighpass.process (y);
         y = outputNotch.process (y);
-        y *= amp * outputScale;
 
         // Écrêtage doux du VCA : l'accent y tape (la 303 sature vers 85 % de sa plage)
         y = softClip (y);
@@ -448,6 +511,7 @@ public:
     void resetState() noexcept
     {
         phase = 0.0;
+        toneState = 0.0;
         inputHighpass.reset();
         ladder.reset();
         decimator.reset();
@@ -461,8 +525,6 @@ public:
     /** Niveau de sortie : une note normale culmine vers -12 dBFS, un accent à fond juste sous 0 dBFS
         (l'écart d'Open303 : jusqu'à +11 dB). L'écrêtage ne prend que les crêtes de résonance. */
     static constexpr double outputScale = 0.21;
-    static constexpr double squareDrive = 70.0;          // dB2amp (36.9)
-    static constexpr double squareOffset = 4.37;
 
     static double softClip (double x) noexcept
     {
@@ -495,14 +557,15 @@ private:
 
     void updateDecays() noexcept
     {
-        const double decayMs = accent ? accentDecay : normalDecay;
+        const double decayMs = accent ? calib.accentDecay : normalDecay;
         mainCoeff = std::exp (-1.0 / (0.001 * decayMs * sampleRate));
-        ampDecayCoeff = std::exp (-1.0 / (0.001 * ampDecay * sampleRate));
+        ampDecayCoeff = std::exp (-1.0 / (0.001 * calib.ampDecay * sampleRate));
         normalReleaseCoeff = std::exp (-1.0 / (0.001 * normalRelease * sampleRate));
         accentReleaseCoeff = std::exp (-1.0 / (0.001 * accentRelease * sampleRate));
     }
 
     double sampleRate = 44100.0;
+    Calibration calib;
     VoiceSettings settings;
 
     double cutoffHz = 1000.0, resonanceSkewed = 0.0, envScaler = 1.0, envOffset = 0.3, normalDecay = 600.0;
@@ -510,6 +573,7 @@ private:
     double sweepCharge = 0.0, sweepDischarge = 0.0, sweepDepth = 1.0, sweep = 0.0;
     double mainCoeff = 0.0, ampDecayCoeff = 0.0, normalReleaseCoeff = 0.0, accentReleaseCoeff = 0.0, slideCoeff = 0.0;
 
+    double driveGain = 1.0, driveBias = 0.0, driveNorm = 1.0, driveTone = 1.0, driveWet = 0.0, toneState = 0.0;
     double phase = 0.0, frequency = 110.0, targetFrequency = 110.0;
     double mainEnv = 0.0, ampEnv = 0.0;
     bool accent = false, gateOn = false, idle = true;

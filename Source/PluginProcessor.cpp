@@ -1,6 +1,7 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 #include "FactoryPresets.h"
+#include "PatternGenerator.h"
 
 //==============================================================================
 const juce::StringArray& AcidMachineAudioProcessor::rateNames()
@@ -61,6 +62,13 @@ juce::AudioProcessorValueTreeState::ParameterLayout AcidMachineAudioProcessor::c
                         return String (juce::roundToInt (v)) + " ms";
                     })));
 
+    layout.add (knob (driveId, "Drive", 0.0f));
+
+    StringArray styles;
+    for (int i = 0; i < acid::PatternGenerator::numStyles; ++i)
+        styles.add (acid::PatternGenerator::styleName (i));
+    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { randomStyleId, 1 }, "Random Style", styles, (int) acid::PatternGenerator::acid));
+
     layout.add (std::make_unique<AudioParameterBool> (ParameterID { seqId, 1 }, "Sequencer", true));
     layout.add (std::make_unique<AudioParameterInt> (ParameterID { lengthId, 1 }, "Length", 1, numSteps, numSteps));
     layout.add (std::make_unique<AudioParameterChoice> (ParameterID { rateId, 1 }, "Rate", rateNames(), 1));
@@ -94,7 +102,7 @@ AcidMachineAudioProcessor::AcidMachineAudioProcessor()
                    [] (int i) { return juce::String (acid::factoryPresets()[(size_t) i].name); },
                    [this] (int i) { applyFactoryPreset (i); },
                    [this] { return matchingFactoryPreset(); } },
-               {}, "UNTITLED")
+               { randomStyleId }, "UNTITLED")
 {
     tuningParam    = apvts.getRawParameterValue (tuningId);
     cutoffParam    = apvts.getRawParameterValue (cutoffId);
@@ -105,6 +113,7 @@ AcidMachineAudioProcessor::AcidMachineAudioProcessor()
     waveformParam  = apvts.getRawParameterValue (waveformId);
     volumeParam    = apvts.getRawParameterValue (volumeId);
     slideTimeParam = apvts.getRawParameterValue (slideTimeId);
+    driveParam     = apvts.getRawParameterValue (driveId);
     seqParam       = apvts.getRawParameterValue (seqId);
     lengthParam    = apvts.getRawParameterValue (lengthId);
     rateParam      = apvts.getRawParameterValue (rateId);
@@ -146,6 +155,7 @@ namespace
         v.push_back ({ P::waveformId, p.square ? 1.0f : 0.0f });
         v.push_back ({ P::volumeId, 0.0f });
         v.push_back ({ P::slideTimeId, 60.0f });
+        v.push_back ({ P::driveId, p.drive });
         v.push_back ({ P::seqId, 1.0f });
         v.push_back ({ P::lengthId, (float) p.length });
         v.push_back ({ P::rateId, (float) p.rate });
@@ -222,6 +232,39 @@ acid::Pattern AcidMachineAudioProcessor::readPattern() const
     return p;
 }
 
+void AcidMachineAudioProcessor::writePattern (const acid::Pattern& pattern)
+{
+    auto set = [this] (const juce::String& id, float value)
+    {
+        if (auto* p = apvts.getParameter (id))
+        {
+            p->beginChangeGesture();
+            p->setValueNotifyingHost (p->convertTo0to1 (value));
+            p->endChangeGesture();
+        }
+    };
+
+    set (lengthId, (float) pattern.length);
+    for (int i = 0; i < numSteps; ++i)
+    {
+        const auto& s = pattern.steps[(size_t) i];
+        set (stepParamId (i, "Pitch"), (float) s.pitch);
+        set (stepParamId (i, "Octave"), (float) s.octave);
+        set (stepParamId (i, "Time"), (float) s.time);
+        set (stepParamId (i, "Accent"), s.accent ? 1.0f : 0.0f);
+        set (stepParamId (i, "Slide"), s.slide ? 1.0f : 0.0f);
+    }
+}
+
+void AcidMachineAudioProcessor::randomizePattern (uint32_t seed)
+{
+    if (seed == 0)
+        seed = (uint32_t) juce::Random::getSystemRandom().nextInt (0x7fffffff) + 1u;
+
+    const int style = juce::roundToInt (apvts.getRawParameterValue (randomStyleId)->load());
+    writePattern (acid::PatternGenerator::generate (style, seed));
+}
+
 //==============================================================================
 void AcidMachineAudioProcessor::prepareToPlay (double sampleRate, int)
 {
@@ -274,6 +317,7 @@ void AcidMachineAudioProcessor::updateVoiceSettings (bool instant)
     follow (smoothDecay,     decayParam->load() * 0.01);
     follow (smoothAccent,    accentParam->load() * 0.01);
     follow (smoothTuning,    tuningParam->load());
+    follow (smoothDrive,     driveParam->load() * 0.01);
 
     acid::VoiceSettings s;
     s.tuning    = smoothTuning.value;
@@ -284,6 +328,7 @@ void AcidMachineAudioProcessor::updateVoiceSettings (bool instant)
     s.accent    = smoothAccent.value;
     s.square    = waveformParam->load() > 0.5f;
     s.slideMs   = slideTimeParam->load();
+    s.drive     = smoothDrive.value < 1.0e-4 ? 0.0 : smoothDrive.value;
     voice.updateSettings (s);
 }
 

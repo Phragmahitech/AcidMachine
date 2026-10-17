@@ -113,6 +113,8 @@ public:
     ~AcidMachineFacade() override;
 
     phragma::PresetBar& getPresetBar() noexcept     { return presetBar; }
+    juce::TextButton& getRandomButton() noexcept    { return randomButton; }
+    juce::TextButton& getStyleButton() noexcept     { return styleButton; }
     StepGrid& getStepGrid() noexcept                { return stepGrid; }
 
     void paint (juce::Graphics&) override;
@@ -140,8 +142,11 @@ private:
     float backgroundScale = 0.0f;
 
     juce::Slider tuningKnob, cutoffKnob, resonanceKnob, envModKnob, decayKnob, accentKnob;
-    juce::Slider slideKnob, volumeKnob, lengthKnob, swingKnob, transposeKnob;
+    juce::Slider slideKnob, volumeKnob, driveKnob, lengthKnob, swingKnob, transposeKnob;
     juce::TextButton seqButton { "SEQ" };
+    juce::TextButton styleButton, randomButton { "RANDOM" };
+    std::unique_ptr<juce::ParameterAttachment> styleAttachment;
+    void showStyleMenu();
     ChoiceSwitch waveformSwitch, rateSwitch;
     StepGrid stepGrid;
 

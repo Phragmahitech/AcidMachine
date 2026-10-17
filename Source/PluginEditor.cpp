@@ -1,5 +1,6 @@
 #include "PluginEditor.h"
 #include "BinaryData.h"
+#include "PatternGenerator.h"
 
 namespace
 {
@@ -12,7 +13,8 @@ namespace
     constexpr int knobY = 192;
     constexpr int bigKnob = 100, midKnob = 78, miniKnob = 54;
     constexpr int knobX[] = { 92, 212, 332, 452, 572, 692 };
-    constexpr int slideX = 950, volumeX = 1040;
+    constexpr int driveX = 912, slideX = 984, volumeX = 1050;
+    constexpr int outKnob = 66;
 
     // Rangée du séquenceur
     constexpr int seqControlsY = 376;
@@ -145,7 +147,7 @@ void AcidLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& b, 
         return LookAndFeel_V4::drawButtonBackground (g, b, {}, over, down);
 
     const auto area = b.getLocalBounds().toFloat().reduced (1.0f);
-    const bool on = b.getToggleState();
+    const bool on = b.getToggleState() || id == "random";
 
     // Touche en plastique, légèrement bombée ; allumée = jaune acide
     const auto shape = roundedBox (area, 3.0f);
@@ -173,7 +175,32 @@ void AcidLookAndFeel::drawButtonText (juce::Graphics& g, juce::TextButton& b, bo
 
     g.setColour (ink());
     g.setFont (font (11.5f, true, 0.12f));
-    g.drawText (b.getButtonText(), b.getLocalBounds(), juce::Justification::centred, false);
+    auto area = b.getLocalBounds().toFloat();
+
+    if (id == "randomStyle")
+    {
+        g.drawText (b.getButtonText(), area.reduced (12.0f, 0.0f).withTrimmedRight (14.0f), juce::Justification::centredLeft, true);
+        juce::Path caret;
+        const float x = area.getRight() - 20.0f, y = area.getCentreY() - 2.0f;
+        caret.addTriangle (x, y, x + 8.0f, y, x + 4.0f, y + 5.0f);
+        g.setColour (over ? ink() : dimInk());
+        g.fillPath (caret);
+        return;
+    }
+
+    if (id == "random")
+    {
+        // Dé
+        const auto die = juce::Rectangle<float> (20.0f, 20.0f).withCentre ({ area.getX() + 26.0f, area.getCentreY() });
+        g.setColour (ink());
+        g.drawRoundedRectangle (die, 4.0f, 1.6f);
+        for (auto [px, py] : { std::pair<float, float> { 0.28f, 0.28f }, { 0.72f, 0.72f }, { 0.5f, 0.5f }, { 0.72f, 0.28f }, { 0.28f, 0.72f } })
+            g.fillEllipse (juce::Rectangle<float> (3.4f, 3.4f).withCentre ({ die.getX() + px * die.getWidth(), die.getY() + py * die.getHeight() }));
+        g.drawText (b.getButtonText(), area.withTrimmedLeft (34.0f), juce::Justification::centred, false);
+        return;
+    }
+
+    g.drawText (b.getButtonText(), area, juce::Justification::centred, false);
 }
 
 //==============================================================================
@@ -585,13 +612,38 @@ AcidMachineFacade::AcidMachineFacade (AcidMachineAudioProcessor& p)
     addKnob (envModKnob,    P::envModId,    knobBounds (knobX[3], knobY, bigKnob), "big");
     addKnob (decayKnob,     P::decayId,     knobBounds (knobX[4], knobY, bigKnob), "big");
     addKnob (accentKnob,    P::accentId,    knobBounds (knobX[5], knobY, bigKnob), "big");
-    addKnob (slideKnob,     P::slideTimeId, knobBounds (slideX, knobY, midKnob), "mid");
-    addKnob (volumeKnob,    P::volumeId,    knobBounds (volumeX, knobY, midKnob), "mid");
+    addKnob (driveKnob,     P::driveId,     knobBounds (driveX, knobY, outKnob), "mid");
+    addKnob (slideKnob,     P::slideTimeId, knobBounds (slideX, knobY, outKnob), "mid");
+    addKnob (volumeKnob,    P::volumeId,    knobBounds (volumeX, knobY, outKnob), "mid");
     addKnob (lengthKnob,    P::lengthId,    knobBounds (lengthX, seqControlsY, miniKnob), "mini");
     addKnob (swingKnob,     P::swingId,     knobBounds (swingX, seqControlsY, miniKnob), "mini");
     addKnob (transposeKnob, P::transposeId, knobBounds (transposeX, seqControlsY, miniKnob), "mini");
 
-    addSwitch (waveformSwitch, P::waveformId, { "SAW", "SQUARE" }, { 790, 152, 96, 76 }, true);
+    addSwitch (waveformSwitch, P::waveformId, { "SAW", "SQUARE" }, { 786, 152, 82, 76 }, true);
+
+    // RANDOM : style (menu) + bouton
+    styleButton.setComponentID ("randomStyle");
+    styleButton.setBounds (700, seqControlsY - 18, 190, 36);
+    styleButton.setTitle ("Random style");
+    styleButton.setMouseCursor (juce::MouseCursor::PointingHandCursor);
+    styleButton.onClick = [this] { showStyleMenu(); };
+    addAndMakeVisible (styleButton);
+
+    randomButton.setComponentID ("random");
+    randomButton.setBounds (900, seqControlsY - 18, 176, 36);
+    randomButton.setTitle ("Random pattern");
+    randomButton.setMouseCursor (juce::MouseCursor::PointingHandCursor);
+    randomButton.onClick = [this] { audioProcessor.randomizePattern(); stepGrid.repaint(); };
+    addAndMakeVisible (randomButton);
+
+    if (auto* styleParam = p.apvts.getParameter (P::randomStyleId))
+    {
+        styleAttachment = std::make_unique<juce::ParameterAttachment> (*styleParam, [this] (float v)
+        {
+            styleButton.setButtonText (acid::PatternGenerator::styleName (juce::roundToInt (v)));
+        });
+        styleAttachment->sendInitialUpdate();
+    }
     addSwitch (rateSwitch, P::rateId, P::rateNames(), { 176, seqControlsY - 16, 248, 32 }, false);
 
     seqButton.setClickingTogglesState (true);
@@ -678,6 +730,27 @@ void AcidMachineFacade::addSwitch (ChoiceSwitch& sw, const char* parameterId, co
         sw.buttons[i]->onClick = [swPtr, i] { swPtr->attachment->setValueAsCompleteGesture ((float) i); };
 
     sw.attachment->sendInitialUpdate();
+}
+
+void AcidMachineFacade::showStyleMenu()
+{
+    auto* param = audioProcessor.apvts.getParameter (AcidMachineAudioProcessor::randomStyleId);
+    const int current = juce::roundToInt (param->convertFrom0to1 (param->getValue()));
+
+    juce::PopupMenu menu;
+    menu.setLookAndFeel (&lookAndFeel);
+    menu.addSectionHeader ("RANDOM STYLE");
+    for (int i = 0; i < acid::PatternGenerator::numStyles; ++i)
+        menu.addItem (i + 1, acid::PatternGenerator::styleName (i), true, i == current);
+
+    juce::Component::SafePointer<AcidMachineFacade> safe (this);
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&styleButton).withMinimumWidth (styleButton.getWidth()),
+                        [safe] (int result)
+                        {
+                            if (safe == nullptr || result == 0)
+                                return;
+                            safe->styleAttachment->setValueAsCompleteGesture ((float) (result - 1));
+                        });
 }
 
 void AcidMachineFacade::timerCallback()
@@ -783,7 +856,8 @@ void AcidMachineFacade::paintBackground (juce::Graphics& g)
         }
     }
 
-    label ("WAVEFORM", 838, 118);
+    label ("WAVEFORM", 827, 118);
+    label ("DRIVE", driveX, 118);
     label ("SLIDE", slideX, 118);
     label ("VOLUME", volumeX, 118);
 
@@ -808,13 +882,14 @@ void AcidMachineFacade::paintBackground (juce::Graphics& g)
     label ("SWING", swingX, seqRowTop + 18, 10.0f);
     label ("TRANSPOSE", transposeX, seqRowTop + 18, 10.0f);
 
+    label ("RANDOM STYLE", 795, seqRowTop + 18, 10.0f);
+    label ("NEW PATTERN", 988, seqRowTop + 18, 10.0f);
+
     // Aide
     g.setColour (L::dimInk());
-    g.setFont (lookAndFeel.font (9.5f, true, 0.08f));
-    const auto help = juce::Rectangle<float> (690.0f, (float) seqRowTop + 30.0f, (float) W - 714.0f, 64.0f);
-    g.drawText ("SEQ ON : PLAYS WITH THE HOST.  MIDI NOTE = KEY (C3 = NO SHIFT)", help.withHeight (16.0f), juce::Justification::centredRight, false);
-    g.drawText ("SEQ OFF : PLAY FROM MIDI.  VELOCITY 110+ = ACCENT", help.withTrimmedTop (18.0f).withHeight (16.0f), juce::Justification::centredRight, false);
-    g.drawText ("OVERLAPPING NOTES = SLIDE.  NOTE : DRAG, WHEEL, RIGHT CLICK", help.withTrimmedTop (36.0f).withHeight (16.0f), juce::Justification::centredRight, false);
+    g.setFont (lookAndFeel.font (9.0f, true, 0.08f));
+    g.drawText ("SEQ OFF : PLAY FROM MIDI, VELOCITY 110+ = ACCENT, OVERLAP = SLIDE.  SEQ ON : A HELD MIDI NOTE TRANSPOSES (C3 = 0)",
+                juce::Rectangle<float> (24.0f, (float) voiceBottom - 24.0f, (float) W - 48.0f, 14.0f), juce::Justification::centredRight, false);
 }
 
 void AcidMachineFacade::paintDynamic (juce::Graphics& g)

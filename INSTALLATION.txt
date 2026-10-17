@@ -43,5 +43,12 @@ Grille des pas :
   ACCENT, SLIDE (glisse vers le pas suivant) ; on peut peindre en glissant
   Clic sur un numero de pas : le motif s'arrete a ce pas (LENGTH).
 
+DRIVE : saturation apres la voix (0 = aucune). Elle tasse les accents comme une
+pedale d'overdrive.
+
+RANDOM : choisis un style (MINOR, MAJOR, PHRYGIAN, DORIAN, HARMONIC MINOR, ACID,
+HI-TECH, PSY GALLOP, CHAOS) puis clique sur RANDOM : nouveau motif de 16 pas,
+toujours en C (transpose ensuite). Le style n'est pas garde dans les presets.
+
 Presets : fleches, menu du nom, SAVE. Taille de la fenetre : bouton "100 %" ou
 coin en bas a droite.
