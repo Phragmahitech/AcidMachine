@@ -177,6 +177,25 @@ void AcidLookAndFeel::drawButtonText (juce::Graphics& g, juce::TextButton& b, bo
     g.setFont (font (11.5f, true, 0.12f));
     auto area = b.getLocalBounds().toFloat();
 
+    if (id.startsWith ("seqTrigger"))
+    {
+        g.setFont (font (9.0f, true, 0.12f));
+        g.drawText (b.getButtonText(), area, juce::Justification::centred, false);
+        return;
+    }
+
+    if (id == "driveMode")
+    {
+        g.setFont (font (9.5f, true, 0.1f));
+        g.drawText (b.getButtonText(), area.withTrimmedRight (12.0f), juce::Justification::centred, false);
+        juce::Path caret;
+        const float x = area.getRight() - 14.0f, y = area.getCentreY() - 1.5f;
+        caret.addTriangle (x, y, x + 6.0f, y, x + 3.0f, y + 4.0f);
+        g.setColour (dimInk());
+        g.fillPath (caret);
+        return;
+    }
+
     if (id == "randomStyle")
     {
         g.drawText (b.getButtonText(), area.reduced (12.0f, 0.0f).withTrimmedRight (14.0f), juce::Justification::centredLeft, true);
@@ -621,6 +640,28 @@ AcidMachineFacade::AcidMachineFacade (AcidMachineAudioProcessor& p)
 
     addSwitch (waveformSwitch, P::waveformId, { "SAW", "SQUARE" }, { 786, 152, 82, 76 }, true);
 
+    // Départ de la séquence : lecture du DAW (HOST) ou note MIDI tenue (NOTE)
+    addSwitch (triggerSwitch, P::seqTriggerId, { "HOST", "NOTE" }, { 116, seqControlsY - 18, 54, 36 }, true);
+    for (auto* b : triggerSwitch.buttons)
+        b->setTitle ("Sequencer starts with " + b->getButtonText());
+
+    // Mode du DRIVE (menu)
+    driveModeButton.setComponentID ("driveMode");
+    driveModeButton.setBounds (driveX - 40, 246, 80, 22);
+    driveModeButton.setTitle ("Drive mode");
+    driveModeButton.setMouseCursor (juce::MouseCursor::PointingHandCursor);
+    driveModeButton.onClick = [this] { showDriveModeMenu(); };
+    addAndMakeVisible (driveModeButton);
+    if (auto* modeParam = p.apvts.getParameter (P::driveModeId))
+    {
+        driveModeAttachment = std::make_unique<juce::ParameterAttachment> (*modeParam, [this] (float v)
+        {
+            static const char* names[] = { "SOFT", "DIODE 1", "DIODE 2" };
+            driveModeButton.setButtonText (names[juce::jlimit (0, 2, juce::roundToInt (v))]);
+        });
+        driveModeAttachment->sendInitialUpdate();
+    }
+
     // RANDOM : style (menu) + bouton
     styleButton.setComponentID ("randomStyle");
     styleButton.setBounds (700, seqControlsY - 18, 190, 36);
@@ -648,7 +689,7 @@ AcidMachineFacade::AcidMachineFacade (AcidMachineAudioProcessor& p)
 
     seqButton.setClickingTogglesState (true);
     seqButton.setComponentID ("seq");
-    seqButton.setBounds (40, seqControlsY - 18, 100, 36);
+    seqButton.setBounds (40, seqControlsY - 18, 70, 36);
     seqButton.setTitle ("Sequencer on / off");
     seqButton.setMouseCursor (juce::MouseCursor::PointingHandCursor);
     addAndMakeVisible (seqButton);
@@ -730,6 +771,27 @@ void AcidMachineFacade::addSwitch (ChoiceSwitch& sw, const char* parameterId, co
         sw.buttons[i]->onClick = [swPtr, i] { swPtr->attachment->setValueAsCompleteGesture ((float) i); };
 
     sw.attachment->sendInitialUpdate();
+}
+
+void AcidMachineFacade::showDriveModeMenu()
+{
+    auto* param = audioProcessor.apvts.getParameter (AcidMachineAudioProcessor::driveModeId);
+    const int current = juce::roundToInt (param->convertFrom0to1 (param->getValue()));
+
+    juce::PopupMenu menu;
+    menu.setLookAndFeel (&lookAndFeel);
+    menu.addSectionHeader ("DRIVE MODE");
+    menu.addItem (1, "SOFT", true, current == 0);
+    menu.addItem (2, "DIODE 1  (ASYMMETRIC)", true, current == 1);
+    menu.addItem (3, "DIODE 2  (RC CLIPPER)", true, current == 2);
+
+    juce::Component::SafePointer<AcidMachineFacade> safe (this);
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&driveModeButton).withMinimumWidth (160),
+                        [safe] (int result)
+                        {
+                            if (safe != nullptr && result > 0)
+                                safe->driveModeAttachment->setValueAsCompleteGesture ((float) (result - 1));
+                        });
 }
 
 void AcidMachineFacade::showStyleMenu()
@@ -888,7 +950,7 @@ void AcidMachineFacade::paintBackground (juce::Graphics& g)
     // Aide
     g.setColour (L::dimInk());
     g.setFont (lookAndFeel.font (9.0f, true, 0.08f));
-    g.drawText ("SEQ OFF : PLAY FROM MIDI, VELOCITY 110+ = ACCENT, OVERLAP = SLIDE.  SEQ ON : A HELD MIDI NOTE TRANSPOSES (C3 = 0)",
+    g.drawText ("SEQ OFF : PLAY FROM MIDI, VELOCITY 110+ = ACCENT, OVERLAP = SLIDE.   SEQ ON : NOTE = PATTERN RUNS WHILE A MIDI NOTE IS HELD (C3 = NO SHIFT), HOST = RUNS WITH DAW PLAY",
                 juce::Rectangle<float> (24.0f, (float) voiceBottom - 24.0f, (float) W - 48.0f, 14.0f), juce::Justification::centredRight, false);
 }
 

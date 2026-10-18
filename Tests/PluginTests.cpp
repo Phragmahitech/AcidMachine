@@ -113,7 +113,7 @@ static void testParameters()
     std::unique_ptr<juce::AudioProcessor> base (createPluginFilter());
     auto& p = dynamic_cast<Proc&> (*base);
 
-    check (p.getParameters().size() == 16 + 5 * Proc::numSteps, "nombre de parametres : " + juce::String (p.getParameters().size()));
+    check (p.getParameters().size() == 18 + 5 * Proc::numSteps, "nombre de parametres : " + juce::String (p.getParameters().size()));
 
     juce::StringArray ids;
     for (auto* param : p.getParameters())
@@ -123,7 +123,7 @@ static void testParameters()
 
     for (const char* id : { Proc::tuningId, Proc::cutoffId, Proc::resonanceId, Proc::envModId, Proc::decayId, Proc::accentId,
                             Proc::waveformId, Proc::volumeId, Proc::slideTimeId, Proc::seqId, Proc::lengthId, Proc::rateId,
-                            Proc::swingId, Proc::transposeId, Proc::driveId, Proc::randomStyleId })
+                            Proc::swingId, Proc::transposeId, Proc::driveId, Proc::randomStyleId, Proc::driveModeId, Proc::seqTriggerId })
         check (ids.contains (id), juce::String ("parametre manquant : ") + id);
 
     check (ids.contains ("s1Pitch") && ids.contains ("s16Slide"), "parametres des pas");
@@ -247,6 +247,7 @@ static void testSequencerMode()
     p.setPlayHead (&head);
     p.setPlayConfigDetails (0, 2, rate, block);
     p.prepareToPlay (rate, block);
+    setParam (p, Proc::seqTriggerId, 0.0f);   // HOST
 
     // Transport arrêté : rien
     auto stopped = render (p, head, rate, 30, block);
@@ -300,6 +301,89 @@ static void testSequencerMode()
     setParam (p, Proc::seqId, 0.0f);
     auto midiMode = render (p, head, rate, 60, block);
     check (peak (midiMode, (size_t) (0.1 * rate)) < 1.0e-4f, "SEQ eteint : le motif ne joue plus");
+
+    p.releaseResources();
+}
+
+static void testNoteTrigger()
+{
+    std::cout << "- mode SEQ, depart sur note MIDI : la sequence dure le temps de la note" << std::endl;
+    const double rate = 48000.0;
+    const int block = 480;
+    std::unique_ptr<juce::AudioProcessor> base (createPluginFilter());
+    auto& p = dynamic_cast<Proc&> (*base);
+    FakePlayHead head;
+    head.bpm = 120.0;
+    p.setPlayHead (&head);
+    p.setPlayConfigDetails (0, 2, rate, block);
+    p.prepareToPlay (rate, block);
+
+    check (getParam (p, Proc::seqTriggerId) == 1.0f, "un plugin neuf doit partir sur note MIDI");
+    check (! p.presets.isStored (*p.apvts.getParameter (Proc::seqTriggerId)), "le mode de depart ne doit pas aller dans les presets");
+
+    // Le DAW joue mais aucune note : silence
+    head.playing = true;
+    auto idle = render (p, head, rate, 60, block);
+    check (peak (idle) == 0.0f, "sans note MIDI, la sequence ne doit pas jouer");
+
+    // Note tenue de 1,1 s (pas de 6000 échantillons à 120 BPM) commençant à l'échantillon 1000 du bloc 2
+    const int start = 2 * block + 1000 % block, startBlock = 2 + 1000 / block;
+    const int noteOn = startBlock * block + (1000 % block);
+    const int length = (int) (1.1 * rate);
+    auto out = render (p, head, rate, 300, block, [&] (int b, juce::MidiBuffer& m)
+    {
+        if (b == startBlock) m.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 1000 % block);
+        const int off = noteOn + length;
+        if (b == off / block) m.addEvent (juce::MidiMessage::noteOff (1, 60), off % block);
+    });
+    (void) start;
+    check (out[(size_t) noteOn - 1] == 0.0f && out[(size_t) noteOn] != 0.0f, "la sequence doit partir a l'echantillon de la note");
+
+    int onsets = 0;
+    for (size_t i = 1; i < out.size(); ++i)
+        if (out[i - 1] == 0.0f && out[i] != 0.0f)
+        {
+            check ((int) (i - (size_t) noteOn) % 6000 == 0, "attaque hors de la grille de la note : " + juce::String ((int) i - noteOn));
+            ++onsets;
+        }
+    check (onsets == 9, "1,1 s de note a 120 BPM = 9 doubles croches : " + juce::String (onsets));
+    check (peak (out, (size_t) (noteOn + length + (int) (0.15 * rate))) < 1.0e-4f, "apres la fin de la note, plus rien");
+
+    // Deuxième note : repart du pas 1 ; une note jouée par-dessus transpose sans redémarrer
+    for (int s = 1; s < 16; ++s)
+        setParam (p, Proc::stepParamId (s, "Time"), 1.0f);   // une seule note longue (TIE)
+    setParam (p, Proc::cutoffId, 80.0f);
+    setParam (p, Proc::decayId, 100.0f);
+    // (la transposition s'applique à la prochaine note du motif : ici le pas 1, au tour suivant, à 2 s)
+    auto legato = render (p, head, rate, 280, block, [&] (int b, juce::MidiBuffer& m)
+    {
+        if (b == 0)  m.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
+        if (b == 60) m.addEvent (juce::MidiMessage::noteOn (1, 67, (juce::uint8) 100), 0);
+        if (b == 270) { m.addEvent (juce::MidiMessage::noteOff (1, 67), 0); m.addEvent (juce::MidiMessage::noteOff (1, 60), 0); }
+    });
+    int restarts = 0;
+    for (size_t i = 1; i < legato.size(); ++i)
+        restarts += legato[i - 1] == 0.0f && legato[i] != 0.0f;
+    check (restarts == 1, "la note jouee par-dessus ne doit pas redemarrer la sequence");
+    check (p.getPlayingStep() == -1 || ! p.isSequencerRunning(), "note relachee : sequence arretee");
+    check (std::abs (pitchOf (legato, 6000, 20000, rate) / 65.406 - 1.0) < 0.01, "C3 : pas de transposition (" + juce::String (pitchOf (legato, 6000, 20000, rate)) + ")");
+    check (std::abs (pitchOf (legato, 60 * block + 6000, 20000, rate) / 65.406 - 1.0) < 0.01, "G3 par-dessus : la note en cours continue");
+    check (std::abs (pitchOf (legato, 200 * block + 6000, 20000, rate) / 97.999 - 1.0) < 0.01, "G3 par-dessus : +7 au tour suivant (" + juce::String (pitchOf (legato, 200 * block + 6000, 20000, rate)) + ")");
+
+    // Le transport arrêté n'empêche pas de jouer au clavier
+    head.playing = false;
+    auto stopped = render (p, head, rate, 40, block, [] (int b, juce::MidiBuffer& m)
+    {
+        if (b == 0) m.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
+    });
+    check (peak (stopped) > 0.05f, "note MIDI, transport arrete : la sequence doit jouer");
+
+    // Retour en HOST : la séquence suit la lecture du DAW, sans note
+    setParam (p, Proc::seqTriggerId, 0.0f);
+    head.playing = true;
+    head.ppq = 0.0;
+    auto host = render (p, head, rate, 60, block);
+    check (peak (host, (size_t) (0.1 * rate)) > 0.05f, "HOST : la sequence doit jouer avec le DAW");
 
     p.releaseResources();
 }
@@ -595,11 +679,12 @@ int main (int argc, char* argv[])
     testFactoryBank();
     testMidiMode();
     testSequencerMode();
+    testNoteTrigger();
     testRobustness();
     testState();
     testRandom (outputDir);
     testEditor (outputDir);
-    testPresetsAndWindowSize<Proc, AcidMachineAudioProcessorEditor, AcidMachineFacade> ({ Proc::randomStyleId }, outputDir, "INIT");
+    testPresetsAndWindowSize<Proc, AcidMachineAudioProcessorEditor, AcidMachineFacade> ({ Proc::randomStyleId, Proc::seqTriggerId }, outputDir, "INIT");
 
     if (failures == 0)
         std::cout << "OK" << std::endl;

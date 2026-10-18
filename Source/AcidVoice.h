@@ -296,6 +296,7 @@ struct VoiceSettings
     bool square = false;
     double slideMs = 60.0;     // temps de slide (60 = TB-303 d'après Open303)
     double drive = 0.0;        // potard DRIVE (saturation après la voix, 0 = aucune)
+    int driveMode = 0;         // 0 = SOFT (tanh), 1 = DIODE 1 (diodes asymétriques), 2 = DIODE 2 (écrêteur à diodes RC)
 };
 
 class AcidVoice
@@ -362,9 +363,13 @@ public:
 
         // DRIVE : gain avant saturation (jusqu'à +36 dB), légère asymétrie, aigus adoucis
         const double d = clamp01 (s.drive);
-        driveGain = std::pow (10.0, 36.0 * d / 20.0);
-        driveBias = 0.35 * d;
-        driveNorm = driveReference / (std::tanh (driveGain * driveReference + driveBias) - std::tanh (driveBias));
+        driveMode = s.driveMode < 0 || s.driveMode > 2 ? 0 : s.driveMode;
+        driveGain = std::pow (10.0, (driveMode == 0 ? 36.0 : 42.0) * d / 20.0);
+        driveBias = driveMode == 0 ? 0.35 * d : 0.0;
+        driveNorm = 1.0;
+        driveNorm = driveReference / std::abs (staticShape (driveReference));
+        // DIODE 2 : coupure du condensateur de l'écrêteur, plus basse quand on pousse (plus sombre)
+        diodeH = 2.0 * pi * (9000.0 - 4000.0 * d) / (sampleRate * oversampling);
         driveWet = std::min (1.0, d * 8.0);   // fondu depuis 0 : pas de saut quand on quitte la position 0
         const double toneHz = 18000.0 - 11000.0 * d;
         driveTone = 1.0 - std::exp (-2.0 * pi * toneHz / (sampleRate * oversampling));
@@ -374,11 +379,72 @@ public:
 
     const VoiceSettings& getSettings() const noexcept   { return settings; }
 
-    /** La saturation DRIVE seule (niveau de sortie : un signal à driveReference ressort au même niveau). */
-    double driveShape (double v) const noexcept
+    /**
+        Courbe statique de la saturation (sans la mémoire de DIODE 2), niveau normalisé :
+        un signal à driveReference ressort au même niveau.
+    */
+    double staticShape (double v) const noexcept
     {
-        return (std::tanh (driveGain * v + driveBias) - std::tanh (driveBias)) * driveNorm;
+        const double x = driveGain * v;
+        switch (driveMode)
+        {
+            case 1:  return solveDiodePair (x, true) * driveNorm;
+            case 2:  return solveDiodePair (x, false) * driveNorm;
+            default: return (std::tanh (x + driveBias) - std::tanh (driveBias)) * driveNorm;
+        }
     }
+
+    /** La saturation DRIVE, un échantillon (au rythme suréchantillonné). */
+    double driveShape (double v) noexcept
+    {
+        if (driveMode != 2)
+            return staticShape (v);
+
+        // DIODE 2 : résistance + condensateur + paire de diodes tête-bêche (écrêteur classique),
+        // résolu à chaque échantillon (Euler implicite + Newton) : l'écrêtage dépend de la fréquence
+        const double x = driveGain * v;
+        double u = diodeState;
+        for (int i = 0; i < 8; ++i)
+        {
+            const double e = std::exp (std::min (40.0, u / diodeVt)), ie = 1.0 / e;
+            const double sh = 0.5 * (e - ie), ch = 0.5 * (e + ie);
+            const double f = u - diodeState - diodeH * (x - u - diodeIs * sh);
+            const double df = 1.0 + diodeH * (1.0 + diodeIs / diodeVt * ch);
+            const double step = f / df;
+            u -= step;
+            if (std::abs (step) < 1.0e-9)
+                break;
+        }
+        diodeState = u;
+        return u * driveNorm;
+    }
+
+    /**
+        Tension aux bornes des diodes pour un courant d'entrée x (résistance série = 1) :
+        u + Is·(e^(u/Vt) − 1) = x. asymmetric : une diode dans un sens, deux en série dans l'autre
+        (DIODE 1 : harmoniques paires) ; sinon une paire symétrique.
+    */
+    static double solveDiodePair (double x, bool asymmetric) noexcept
+    {
+        const double sign = x < 0.0 ? -1.0 : 1.0;
+        const double ax = std::abs (x);
+        const double vt = (asymmetric && x < 0.0) ? 2.0 * diodeVt : diodeVt;   // deux diodes : seuil doublé
+        double u = ax < diodeIs * 10.0 ? ax / (1.0 + diodeIs / vt) : vt * std::log (ax / diodeIs + 1.0);
+        u = std::min (u, ax);
+        for (int i = 0; i < 12; ++i)
+        {
+            const double e = std::exp (std::min (40.0, u / vt));
+            const double f = u + diodeIs * (e - 1.0) - ax;
+            const double step = f / (1.0 + diodeIs / vt * e);
+            u -= step;
+            if (u < 0.0) u = 0.0;
+            if (std::abs (step) < 1.0e-10)
+                break;
+        }
+        return sign * u;
+    }
+
+    static constexpr double diodeVt = 0.12, diodeIs = 0.01;
 
     static constexpr double driveReference = 0.1;
 
@@ -397,6 +463,7 @@ public:
             // Rien ne sonne : on repart de zéro (pas de clic possible)
             phase = 0.0;
             toneState = 0.0;
+            diodeState = 0.0;
             inputHighpass.reset();
             ladder.reset();
             decimator.reset();
@@ -485,7 +552,7 @@ public:
             // DRIVE, au rythme suréchantillonné (pas de repliement des harmoniques ajoutées)
             if (settings.drive > 0.0)
             {
-                const double shaped = driveShape (x);
+                const double shaped = driveShape (x);   // SOFT, DIODE 1 ou DIODE 2
                 toneState += driveTone * (shaped - toneState);
                 x += driveWet * (toneState - x);
             }
@@ -512,6 +579,7 @@ public:
     {
         phase = 0.0;
         toneState = 0.0;
+        diodeState = 0.0;
         inputHighpass.reset();
         ladder.reset();
         decimator.reset();
@@ -574,6 +642,8 @@ private:
     double mainCoeff = 0.0, ampDecayCoeff = 0.0, normalReleaseCoeff = 0.0, accentReleaseCoeff = 0.0, slideCoeff = 0.0;
 
     double driveGain = 1.0, driveBias = 0.0, driveNorm = 1.0, driveTone = 1.0, driveWet = 0.0, toneState = 0.0;
+    double diodeState = 0.0, diodeH = 0.1;
+    int driveMode = 0;
     double phase = 0.0, frequency = 110.0, targetFrequency = 110.0;
     double mainEnv = 0.0, ampEnv = 0.0;
     bool accent = false, gateOn = false, idle = true;

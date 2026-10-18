@@ -658,18 +658,61 @@ static void testDrive()
         check (std::abs (rmsDb - firstRms) < 9.0, "DRIVE " + num (d) + " : niveau moyen trop different (" + num (rmsDb - firstRms) + " dB)");
     }
 
+    // Modes DIODE : courbes statiques (DIODE 1 asymétrique, DIODE 2 symétrique), niveau de référence tenu
+    for (int mode : { 0, 1, 2 })
+    {
+        AcidVoice v;
+        v.prepare (rate);
+        auto s = makeSettings (0.4, 0.6, 0.5, 0.5, 1.0);
+        s.drive = 0.8;
+        s.driveMode = mode;
+        v.updateSettings (s);
+        check (std::abs (std::abs (v.staticShape (AcidVoice::driveReference)) - AcidVoice::driveReference) < 1.0e-6, "niveau de reference, mode " + std::to_string (mode));
+        const double up = v.staticShape (0.5), down = -v.staticShape (-0.5);
+        if (mode == 1) check (down > up * 1.15, "DIODE 1 : le cote a deux diodes doit ecreter plus tard (" + num (up) + " / " + num (down) + ")");
+        if (mode == 2) check (std::abs (up - down) < 1.0e-9, "DIODE 2 : courbe symetrique");
+        bool monotonic = true;
+        double previous = -1.0e9;
+        for (double x = -1.0; x <= 1.0; x += 0.001) { const double y = v.staticShape (x); monotonic = monotonic && y >= previous - 1.0e-12; previous = y; }
+        check (monotonic, "courbe non monotone, mode " + std::to_string (mode));
+    }
+
+    // DIODE 2 adoucit les aigus plus que DIODE 1 (condensateur de l'écrêteur)
+    {
+        auto bright = [&] (int mode)
+        {
+            AcidVoice v;
+            v.prepare (rate);
+            auto s = makeSettings (1.0, 0.3, 0.0, 1.0, 0.0);
+            s.drive = 1.0;
+            s.driveMode = mode;
+            v.updateSettings (s);
+            const auto out = renderNote (v, 36, false, 300.0, 300.0, rate);
+            double hi = 0.0, lo = 0.0;
+            for (int h = 60; h < 90; ++h) hi += toneLevel (out, 4800, 4800, 65.406 * h, rate);
+            for (int h = 1; h < 6; ++h) lo += toneLevel (out, 4800, 4800, 65.406 * h, rate);
+            return hi / lo;
+        };
+        check (bright (2) < bright (1), "DIODE 2 devrait etre plus sombre que DIODE 1");
+    }
+
     // Stabilité et silence au repos avec DRIVE à fond
     {
         AcidVoice v;
         v.prepare (44100.0);
-        auto s = makeSettings (1.0, 1.0, 1.0, 1.0, 1.0, true);
-        s.drive = 1.0;
-        v.updateSettings (s);
-        auto out = renderNote (v, 24, true, 200.0, 1500.0, 44100.0);
-        bool finite = true;
-        for (auto x : out) finite = finite && std::isfinite (x) && std::abs (x) <= 1.0;
-        check (finite, "DRIVE a fond : sortie non finie ou au-dela de 1");
-        check (peakOf (out, (size_t) (1.2 * 44100.0)) < 1.0e-4 && v.isIdle(), "DRIVE a fond : la voix doit s'eteindre");
+        for (int mode : { 0, 1, 2 })
+        {
+            auto s = makeSettings (1.0, 1.0, 1.0, 1.0, 1.0, true);
+            s.drive = 1.0;
+            s.driveMode = mode;
+            v.updateSettings (s);
+            auto out = renderNote (v, 24, true, 200.0, 1500.0, 44100.0);
+            bool finite = true;
+            for (auto x : out) finite = finite && std::isfinite (x) && std::abs (x) <= 1.0;
+            check (finite, "DRIVE a fond : sortie non finie ou au-dela de 1, mode " + std::to_string (mode));
+            check (peakOf (out, (size_t) (1.2 * 44100.0)) < 1.0e-4 && v.isIdle(), "DRIVE a fond : la voix doit s'eteindre, mode " + std::to_string (mode));
+            v.kill();
+        }
     }
 }
 

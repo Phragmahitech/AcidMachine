@@ -28,9 +28,13 @@ Utilisation
 -----------
 Acid Machine est un instrument (piste MIDI).
 
-SEQ allume (defaut) : le motif de 16 pas joue quand le transport du DAW tourne,
-cale sur la mesure. Une note MIDI tenue transpose le motif (C3 = pas de
-transposition). TRANSPOSE fait la meme chose en permanence.
+SEQ allume (defaut), deux facons de lancer le motif :
+  - NOTE (defaut) : le motif part du pas 1 a chaque note MIDI et joue tant que
+    la note est tenue ; la longueur de la note = la longueur jouee. La hauteur
+    de la note transpose (C3 = pas de transposition). Une note jouee par-dessus
+    change la tonalite sans redemarrer (a partir de la note suivante du motif).
+  - HOST : le motif joue quand le transport du DAW tourne, cale sur la mesure.
+TRANSPOSE decale en permanence.
 
 SEQ eteint : on joue Acid Machine depuis un clip MIDI.
   - velocite 110 ou plus = ACCENT
@@ -43,8 +47,10 @@ Grille des pas :
   ACCENT, SLIDE (glisse vers le pas suivant) ; on peut peindre en glissant
   Clic sur un numero de pas : le motif s'arrete a ce pas (LENGTH).
 
-DRIVE : saturation apres la voix (0 = aucune). Elle tasse les accents comme une
-pedale d'overdrive.
+DRIVE : saturation apres la voix (0 = aucune), trois modes sous le potard :
+  SOFT    : tanh, douce
+  DIODE 1 : ecreteur a diodes asymetrique (une diode / deux diodes), harmoniques paires
+  DIODE 2 : ecreteur a diodes avec condensateur (resistance + paire de diodes), plus sombre
 
 RANDOM : choisis un style (MINOR, MAJOR, PHRYGIAN, DORIAN, HARMONIC MINOR, ACID,
 HI-TECH, PSY GALLOP, CHAOS) puis clique sur RANDOM : nouveau motif de 16 pas,

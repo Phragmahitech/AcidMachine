@@ -63,6 +63,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout AcidMachineAudioProcessor::c
                     })));
 
     layout.add (knob (driveId, "Drive", 0.0f));
+    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { driveModeId, 1 }, "Drive Mode", StringArray { "SOFT", "DIODE 1", "DIODE 2" }, 0));
+    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { seqTriggerId, 1 }, "Sequencer Trigger", StringArray { "HOST", "MIDI NOTE" }, 1));
 
     StringArray styles;
     for (int i = 0; i < acid::PatternGenerator::numStyles; ++i)
@@ -102,7 +104,7 @@ AcidMachineAudioProcessor::AcidMachineAudioProcessor()
                    [] (int i) { return juce::String (acid::factoryPresets()[(size_t) i].name); },
                    [this] (int i) { applyFactoryPreset (i); },
                    [this] { return matchingFactoryPreset(); } },
-               { randomStyleId }, "UNTITLED")
+               { randomStyleId, seqTriggerId }, "UNTITLED")
 {
     tuningParam    = apvts.getRawParameterValue (tuningId);
     cutoffParam    = apvts.getRawParameterValue (cutoffId);
@@ -114,6 +116,8 @@ AcidMachineAudioProcessor::AcidMachineAudioProcessor()
     volumeParam    = apvts.getRawParameterValue (volumeId);
     slideTimeParam = apvts.getRawParameterValue (slideTimeId);
     driveParam     = apvts.getRawParameterValue (driveId);
+    driveModeParam = apvts.getRawParameterValue (driveModeId);
+    seqTriggerParam = apvts.getRawParameterValue (seqTriggerId);
     seqParam       = apvts.getRawParameterValue (seqId);
     lengthParam    = apvts.getRawParameterValue (lengthId);
     rateParam      = apvts.getRawParameterValue (rateId);
@@ -156,6 +160,7 @@ namespace
         v.push_back ({ P::volumeId, 0.0f });
         v.push_back ({ P::slideTimeId, 60.0f });
         v.push_back ({ P::driveId, p.drive });
+        v.push_back ({ P::driveModeId, (float) p.driveMode });
         v.push_back ({ P::seqId, 1.0f });
         v.push_back ({ P::lengthId, (float) p.length });
         v.push_back ({ P::rateId, (float) p.rate });
@@ -278,6 +283,7 @@ void AcidMachineAudioProcessor::prepareToPlay (double sampleRate, int)
 
     heldNotes.clear();
     midiTranspose = 0;
+    noteSequenceRunning = false;
     sequencer.stop ([] (int, const acid::AcidSequencer::Event&) {});
     playingStep = -1;
     sequencerRunning = false;
@@ -289,6 +295,7 @@ void AcidMachineAudioProcessor::reset()
     voice.kill();
     heldNotes.clear();
     midiTranspose = 0;
+    noteSequenceRunning = false;
     sequencer.stop ([] (int, const acid::AcidSequencer::Event&) {});
     playingStep = -1;
     sequencerRunning = false;
@@ -329,6 +336,7 @@ void AcidMachineAudioProcessor::updateVoiceSettings (bool instant)
     s.square    = waveformParam->load() > 0.5f;
     s.slideMs   = slideTimeParam->load();
     s.drive     = smoothDrive.value < 1.0e-4 ? 0.0 : smoothDrive.value;
+    s.driveMode = (int) std::lround (driveModeParam->load());
     voice.updateSettings (s);
 }
 
@@ -422,8 +430,11 @@ void AcidMachineAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
         return;
 
     const bool sequencerMode = seqParam->load() > 0.5f;
-    if (sequencerMode != lastSequencerMode)
+    const int triggerMode = (int) std::lround (seqTriggerParam->load());
+    if (sequencerMode != lastSequencerMode || triggerMode != lastTriggerMode)
     {
+        noteSequenceRunning = false;
+        lastTriggerMode = triggerMode;
         voice.noteOff();
         heldNotes.clear();
         midiTranspose = 0;
@@ -434,6 +445,21 @@ void AcidMachineAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
 
     events.clear();
 
+    if (sequencerMode && triggerMode == 1)
+    {
+        // MIDI NOTE : la séquence part du pas 1 à chaque note et s'arrête quand on la lâche
+        double bpm = 120.0;
+        if (auto* head = getPlayHead())
+            if (const auto position = head->getPosition())
+                if (const auto b = position->getBpm())
+                    bpm = *b;
+
+        runNoteTriggeredSequencer (midi, numSamples, bpm);
+        playingStep = noteSequenceRunning ? sequencer.getCurrentStep() : -1;
+        sequencerRunning = noteSequenceRunning;
+    }
+    else
+    {
     for (const auto metadata : midi)
         handleMidi (metadata.getMessage(), juce::jlimit (0, numSamples - 1, metadata.samplePosition), sequencerMode, events);
 
@@ -468,6 +494,7 @@ void AcidMachineAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
     {
         playingStep = -1;
         sequencerRunning = false;
+    }
     }
 
     std::stable_sort (events.begin(), events.end(), [] (const PendingEvent& a, const PendingEvent& b)
@@ -516,6 +543,83 @@ void AcidMachineAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, 
 
     if (peak > outputPeak.load (std::memory_order_relaxed))
         outputPeak.store (peak, std::memory_order_relaxed);
+}
+
+void AcidMachineAudioProcessor::runNoteTriggeredSequencer (const juce::MidiBuffer& midi, int numSamples, double bpm)
+{
+    sequencer.setPattern (readPattern());
+    sequencer.setStepBeats (rateInBeats ((int) std::lround (rateParam->load())));
+    sequencer.setSwing (swingParam->load() * 0.01);
+
+    const double beatsPerSample = bpm / (60.0 * currentSampleRate);
+    const int baseTranspose = (int) std::lround (transposeParam->load());
+
+    auto emitAt = [this] (int base)
+    {
+        return [this, base] (int offset, const acid::AcidSequencer::Event& e)
+        {
+            events.push_back ({ base + offset, (int) events.size(), e.type, e.note, e.accent, false });
+        };
+    };
+
+    // Avance la séquence de position jusqu'à end (exclu)
+    int position = 0;
+    auto advanceTo = [&] (int end)
+    {
+        if (end <= position)
+            return;
+        if (noteSequenceRunning)
+        {
+            sequencer.setTranspose (baseTranspose + midiTranspose);
+            sequencer.process (true, notePpq, bpm, currentSampleRate, end - position, emitAt (position));
+            notePpq += beatsPerSample * (end - position);
+        }
+        position = end;
+    };
+
+    for (const auto metadata : midi)
+    {
+        const auto& m = metadata.getMessage();
+        const int offset = juce::jlimit (0, numSamples - 1, metadata.samplePosition);
+        advanceTo (offset);
+
+        if (m.isNoteOn())
+        {
+            const int note = m.getNoteNumber();
+            const bool first = heldNotes.empty();
+            heldNotes.erase (std::remove (heldNotes.begin(), heldNotes.end(), note), heldNotes.end());
+            heldNotes.push_back (note);
+            midiTranspose = note - transposeCentre;
+
+            if (first)
+            {
+                // Nouvelle note (rien n'était tenu) : départ au pas 1, ici
+                sequencer.stop (emitAt (offset));
+                noteSequenceRunning = true;
+                notePpq = 0.0;
+            }
+        }
+        else if (m.isNoteOff() || m.isAllNotesOff() || m.isAllSoundOff())
+        {
+            if (m.isNoteOff())
+                heldNotes.erase (std::remove (heldNotes.begin(), heldNotes.end(), m.getNoteNumber()), heldNotes.end());
+            else
+                heldNotes.clear();
+
+            if (heldNotes.empty())
+            {
+                sequencer.stop (emitAt (offset));
+                noteSequenceRunning = false;
+                midiTranspose = 0;
+            }
+            else
+            {
+                midiTranspose = heldNotes.back() - transposeCentre;   // legato : on change seulement de tonalité
+            }
+        }
+    }
+
+    advanceTo (numSamples);
 }
 
 void AcidMachineAudioProcessor::processBlockBypassed (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)

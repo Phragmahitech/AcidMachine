@@ -115,6 +115,8 @@ public:
     phragma::PresetBar& getPresetBar() noexcept     { return presetBar; }
     juce::TextButton& getRandomButton() noexcept    { return randomButton; }
     juce::TextButton& getStyleButton() noexcept     { return styleButton; }
+    juce::TextButton& getDriveModeButton() noexcept { return driveModeButton; }
+    juce::TextButton& getTriggerButton (int i)      { return *triggerSwitch.buttons[i]; }
     StepGrid& getStepGrid() noexcept                { return stepGrid; }
 
     void paint (juce::Graphics&) override;
@@ -147,6 +149,10 @@ private:
     juce::TextButton styleButton, randomButton { "RANDOM" };
     std::unique_ptr<juce::ParameterAttachment> styleAttachment;
     void showStyleMenu();
+    juce::TextButton driveModeButton;
+    std::unique_ptr<juce::ParameterAttachment> driveModeAttachment;
+    void showDriveModeMenu();
+    ChoiceSwitch triggerSwitch;
     ChoiceSwitch waveformSwitch, rateSwitch;
     StepGrid stepGrid;
 

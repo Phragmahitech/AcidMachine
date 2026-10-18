@@ -20,6 +20,8 @@ public:
     static constexpr const char* volumeId     = "volume";
     static constexpr const char* slideTimeId  = "slideTime";
     static constexpr const char* driveId      = "drive";
+    static constexpr const char* driveModeId  = "driveMode";     // SOFT / DIODE 1 / DIODE 2
+    static constexpr const char* seqTriggerId = "seqTrigger";    // HOST (lecture du DAW) / MIDI NOTE (pas gardé dans les presets)
     static constexpr const char* randomStyleId = "randomStyle";   // style du bouton RANDOM (pas gardé dans les presets)
 
     static constexpr const char* seqId        = "seq";
@@ -112,6 +114,12 @@ private:
     };
 
     void handleMidi (const juce::MidiMessage&, int offset, bool sequencerMode, std::vector<PendingEvent>&);
+    void runNoteTriggeredSequencer (const juce::MidiBuffer&, int numSamples, double bpm);
+
+    // Séquence déclenchée par note MIDI : position (en noires) depuis la note
+    bool noteSequenceRunning = false;
+    double notePpq = 0.0;
+    int lastTriggerMode = -1;
     void applyEvent (const PendingEvent&);
     void updateVoiceSettings (bool instant);
 
@@ -129,6 +137,8 @@ private:
     std::atomic<float>* volumeParam = nullptr;
     std::atomic<float>* slideTimeParam = nullptr;
     std::atomic<float>* driveParam = nullptr;
+    std::atomic<float>* driveModeParam = nullptr;
+    std::atomic<float>* seqTriggerParam = nullptr;
     std::atomic<float>* seqParam = nullptr;
     std::atomic<float>* lengthParam = nullptr;
     std::atomic<float>* rateParam = nullptr;

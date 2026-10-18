@@ -33,6 +33,7 @@ struct FactoryPreset
     int length;
     std::array<const char*, 16> steps;
     float drive = 0.0f;   // %
+    int driveMode = 0;    // 0 SOFT, 1 DIODE 1, 2 DIODE 2
 };
 
 /** Lit un pas écrit comme ci-dessus. */
@@ -126,7 +127,7 @@ inline const std::array<FactoryPreset, 18>& factoryPresets()
           {{ "Cv!", "C", "Cv", "C^", "Cv", "C", "Cv~", "C^", "Cv!", "C", "D#", "Cv", "C^!", "Cv", "G", "C" }} },
 
         { "ACID - Screamer",          68, 95, 80, 25, 100, false, 1, 0, 16,
-          {{ "C!", "C^", "C", "D#^!", "C", "C^~", "G", "C", "C!", "F^", "C", "C^", "D#!~", "C^", "A#", "G" }}, 45 },
+          {{ "C!", "C^", "C", "D#^!", "C", "C^~", "G", "C", "C!", "F^", "C", "C^", "D#!~", "C^", "A#", "G" }}, 45, 1 },
 
         { "ACID - Slide City",        30, 80, 60, 60, 70, false, 1,  0, 16,
           {{ "C~", "D#~", "F~", "G!", "G~", "F~", "D#", "C!", "C~", "A#v~", "C~", "G!", "D#~", "C~", "F", "C" }} },
@@ -141,7 +142,7 @@ inline const std::array<FactoryPreset, 18>& factoryPresets()
           {{ "-", "C", "C^", "C!", "-", "C", "C", "D#!", "-", "C", "C^", "C!", "-", "C#", "C", "G!" }} },
 
         { "ACID - Hi-Tech Run",       40, 86, 70, 15, 90, false, 1,  0, 16,
-          {{ "C!", "C^", "C", "C^", "C#!", "C^", "C", "G", "C!", "C^", "D#", "C^", "C!", "F#^", "C", "G^" }}, 25 },
+          {{ "C!", "C^", "C", "C^", "C#!", "C^", "C", "G", "C!", "C^", "D#", "C^", "C!", "F#^", "C", "G^" }}, 35, 2 },
     }};
 
     return list;
